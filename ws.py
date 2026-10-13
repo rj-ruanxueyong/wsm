@@ -11,6 +11,10 @@
     ws.py remove --all [--yes]
     ws.py status | list [--repo|--component] [--all] | doctor [--net]
 
+仓库根（REPOS_ROOT）与 git 用户名（USER_NAME，别名 REPOS_USER_NAME）已改为全局
+配置 ~/.config/wsm/ws.config 管理，本地 .ws_env/ws.config 里的同名旧键仅作兜底；
+其余配置（IMAGES_URL 等工作区属性）仍保存在工作区本地。
+
 下载统一走 download.py，解析/解压统一走 extract.py。
 """
 
@@ -385,18 +389,21 @@ def cmd_init(args):
     if not os.path.isdir(env):
         ws.emit_error("ENV_DIR_FAILED", "无法创建 %s" % env)
 
+    gconf = ws.global_config_path()
     repos_root = args.repos_root or ws.config_value("REPOS_ROOT", root)
     if not repos_root:
         ws.emit_error("REPOS_ROOT_MISSING",
-                      "缺少仓库群根路径，请用 --repos-root <path> 指定，或先在 .ws_env/ws.config 中配置 REPOS_ROOT")
+                      "缺少仓库群根路径，请用 --repos-root <path> 指定，"
+                      "或在全局配置 %s 中设置 REPOS_ROOT" % gconf)
     repos_root = os.path.abspath(os.path.expanduser(repos_root))
     if not os.path.isdir(repos_root):
         ws.emit_error("REPOS_ROOT_INVALID", "仓库群根路径不存在: %s" % repos_root)
 
-    user = args.user or ws.config_value("USER_NAME", root) or user_name_from_git()
+    user = args.user or ws.config_user_name(root) or user_name_from_git()
     if not user:
         ws.emit_error("USER_MISSING",
-                      "缺少用户名，请用 --user <user_name> 指定，或配置 git config --global user.email")
+                      "缺少用户名，请用 --user <user_name> 指定，"
+                      "或在全局配置 %s 设置 USER_NAME" % gconf)
 
     reset_issues(root)
     pub_dir = ws.ensure_dir(os.path.join(root, ws.PUB_DIR_NAME))
@@ -411,9 +418,8 @@ def cmd_init(args):
         ws.emit_error(exc.code, exc.message, issues=load_issues(root))
 
     product = ex.get("product", {})
+    # REPOS_ROOT / 用户名已改为全局配置（~/.config/wsm/ws.config），不再写入本地
     ws.save_config({
-        "REPOS_ROOT": repos_root,
-        "USER_NAME": user,
         "COMPILE_OUTPUT_URL": args.url,
         "BUILD_PROJECT": product.get("build_project") or "",
         "PROJECT": product.get("project") or "",
@@ -460,10 +466,12 @@ def add_repos(root, args):
                       "未找到 .ws_env/repos.json，请先执行 ws.py init --url <url>")
 
     worktrees = ws.load_worktrees(root)
-    user = ws.config_value("USER_NAME", root) or user_name_from_git() or ""
+    user = ws.config_user_name(root) or user_name_from_git() or ""
     repos_root = ws.config_value("REPOS_ROOT", root)
     if not repos_root:
-        ws.emit_error("REPOS_ROOT_MISSING", "ws.config 中缺少 REPOS_ROOT")
+        ws.emit_error("REPOS_ROOT_MISSING",
+                      "缺少 REPOS_ROOT，请在全局配置 %s 中设置"
+                      % ws.global_config_path())
     repos_root = os.path.abspath(os.path.expanduser(repos_root))
 
     results = []
@@ -828,7 +836,8 @@ def collect_status(root):
         })
     return {"ok": True, "action": "status", "root": root,
             "config": {"project": cfg.get("PROJECT"), "build_project": cfg.get("BUILD_PROJECT"),
-                       "repos_root": cfg.get("REPOS_ROOT"), "user": cfg.get("USER_NAME")},
+                       "repos_root": cfg.get("REPOS_ROOT"),
+                       "user": ws.config_user_name(root)},
             "images": load_images(root), "worktrees": items,
             "warnings": [i for i in load_issues(root) if i.get("level") == "WARN"],
             "issues": [i for i in load_issues(root) if i.get("level") == "ERROR"]}
@@ -848,6 +857,12 @@ def cmd_doctor(args):
         path = os.path.join(env, fname)
         check("%s 可读取" % fname, os.path.isfile(path), path)
 
+    gpath = ws.global_config_path()
+    check("全局配置存在", os.path.isfile(gpath), gpath)
+    gcfg = ws.load_global_config()
+    guser = gcfg.get("USER_NAME") or gcfg.get(ws.USER_NAME_ALT_KEY)
+    check("全局配置含用户名", bool(guser), guser or "未设置")
+
     cfg = ws.load_config(root)
     repos_root = cfg.get("REPOS_ROOT")
     check("REPOS_ROOT 已配置", bool(repos_root), repos_root or "未配置")
@@ -858,9 +873,9 @@ def cmd_doctor(args):
 
     if args.net:
         # gerrit 的 SSH 命令集里没有 shell 的 true，必须用 gerrit 自己的子命令
+        guser = ws.config_user_name(root) or "git"
         code, out, err = ws.run(["ssh", "-p", str(GERRIT_PORT), "-o", "BatchMode=yes",
-                                 "-o", "ConnectTimeout=5", "%s@%s" % (cfg.get("USER_NAME") or "git",
-                                                                     GERRIT_HOST),
+                                 "-o", "ConnectTimeout=5", "%s@%s" % (guser, GERRIT_HOST),
                                  "gerrit version"])
         check("gerrit 可达", code == 0, (out or err or "ok").strip())
 
@@ -981,8 +996,10 @@ def build_parser():
 
     p = sub.add_parser("init", help="初始化工作空间（下载并解析编译产物信息）")
     p.add_argument("--url", required=True, help="项目 compile_output 链接")
-    p.add_argument("--repos-root", default=None, help="仓库群根路径")
-    p.add_argument("--user", default=None, help="用户名（邮箱 @ 前缀，用于 gerrit 克隆）")
+    p.add_argument("--repos-root", default=None,
+                   help="仓库群根路径（缺省读全局配置 ~/.config/wsm/ws.config）")
+    p.add_argument("--user", default=None,
+                   help="用户名（缺省读全局配置，可临时覆盖）")
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("add", help="导入仓库分支 / 获取 images")

@@ -18,6 +18,10 @@ from datetime import datetime
 
 ENV_DIR_NAME = ".ws_env"
 CONFIG_NAME = "ws.config"
+GLOBAL_CONFIG_SUBDIR = "wsm"           # 全局配置子目录（$XDG_CONFIG_HOME/wsm/）
+USER_NAME_ALT_KEY = "REPOS_USER_NAME"  # 用户名在全局配置中的别名写法
+# 仓库根 / git 用户名「改为全局」：全局配置优先，本地同名旧键仅作兜底
+GLOBAL_FIRST_KEYS = ("REPOS_ROOT", "USER_NAME", USER_NAME_ALT_KEY)
 REPOS_JSON_NAME = "repos.json"
 WORKTREES_JSON_NAME = "worktrees.json"
 LOG_DIR_NAME = "log"              # 日志目录（工作区根）
@@ -291,7 +295,22 @@ def parse_config_text(text):
     return cfg
 
 
-def load_config(root=None):
+def global_config_path():
+    """全局配置路径：$XDG_CONFIG_HOME/wsm/ws.config，缺省 ~/.config/wsm/ws.config。"""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join("~", ".config")
+    return os.path.expanduser(os.path.join(base, GLOBAL_CONFIG_SUBDIR, CONFIG_NAME))
+
+
+def load_global_config():
+    """读全局配置；文件不存在或不可读时返回空 dict。"""
+    try:
+        with open(global_config_path(), "r", encoding="utf-8") as fh:
+            return parse_config_text(fh.read())
+    except OSError:
+        return {}
+
+
+def _load_local_config(root=None):
     path = os.path.join(env_dir(root), CONFIG_NAME)
     if not os.path.isfile(path):
         return {}
@@ -299,8 +318,24 @@ def load_config(root=None):
         return parse_config_text(fh.read())
 
 
+def load_config(root=None):
+    """合并后的配置视图。
+
+    REPOS_ROOT 与用户名（USER_NAME，别名 REPOS_USER_NAME）已改为全局管理：
+    以 ~/.config/wsm/ws.config 为准，本地 .ws_env/ws.config 里的同名旧键
+    仅作兜底（旧版本创建的工作区仍可用）；其余键本地优先。
+    """
+    global_cfg = load_global_config()
+    cfg = dict(global_cfg)
+    cfg.update(_load_local_config(root))
+    for key in GLOBAL_FIRST_KEYS:
+        if global_cfg.get(key):
+            cfg[key] = global_cfg[key]
+    return cfg
+
+
 def save_config(cfg, root=None):
-    """写 ws.config（shell 风格，分号结尾）。"""
+    """写本地 ws.config（shell 风格，分号结尾）。不触碰全局配置文件。"""
     path = os.path.join(env_dir(root), CONFIG_NAME)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lines = ["# 工作空间配置（由 ws.py init 生成，可手工修改）"]
@@ -312,13 +347,22 @@ def save_config(cfg, root=None):
 
 
 def update_config(patch, root=None):
-    cfg = load_config(root)
+    # 只改本地文件：全局配置（REPOS_ROOT / 用户名）需手工编辑 ~/.config/wsm/ws.config
+    cfg = _load_local_config(root)
     cfg.update({k.upper(): v for k, v in patch.items() if v is not None})
     return save_config(cfg, root)
 
 
 def config_value(key, root=None, default=None):
     return load_config(root).get(key.upper(), default)
+
+
+def config_user_name(root=None):
+    """取用户名：USER_NAME 优先，兼容全局配置的别名 REPOS_USER_NAME。"""
+    cfg = load_config(root)
+    if cfg.get("USER_NAME"):
+        return cfg["USER_NAME"]
+    return cfg.get(USER_NAME_ALT_KEY)
 
 
 # ---------------------------------------------------------------- JSON 数据
