@@ -7,7 +7,12 @@
         下载 product_info 与 rootfs.config 到 <dir>。
 
     download.py image   --url <url> --out <dir>
-        下载 image.tar.bz2 到 <dir>。
+        下载镜像包（直链）到 <dir>。
+
+    download.py image   --base <output根> --build-project <bp> --project <prj>
+                       --out <dir>
+        在 <base>/<build_project>/<project>/ 下，按构建目录名中的
+        id<时间戳> 从新到旧，探测首个含 image.tar.bz2 的目录并下载。
 
 约定：结果 JSON 写 stdout；失败时写 {"ok": false, ...} 并返回非 0。
 """
@@ -24,11 +29,14 @@ import wslib as ws  # noqa: E402
 
 TIMEOUT = 120
 CHUNK = 1024 * 256
+UA = "rgos-workspace-builder"
+HEADERS = {"User-Agent": UA}
+IMAGE_NAME = "image.tar.bz2"          # 项目构建目录下的镜像包固定名
 
 
 def http_get(url, timeout=TIMEOUT):
     """GET 一个 URL，返回 bytes。"""
-    req = urllib.request.Request(url, headers={"User-Agent": "rgos-workspace-builder"})
+    req = urllib.request.Request(url, headers=HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
@@ -43,7 +51,7 @@ def download(url, out_path, timeout=TIMEOUT, label=None):
     产物先写 <path>.part，成功后再原子替换。
     """
     ws.ensure_dir(os.path.dirname(out_path) or ".")
-    req = urllib.request.Request(url, headers={"User-Agent": "rgos-workspace-builder"})
+    req = urllib.request.Request(url, headers=HEADERS)
     total = 0
     tmp = out_path + ".part"
     label = label or os.path.basename(out_path)
@@ -75,7 +83,7 @@ def pick_image_name(url):
     name = ws.base_name(url)
     if name and ("." in name):
         return name
-    return "image.tar.bz2"
+    return IMAGE_NAME
 
 
 def scan_info_dirs(base):
@@ -163,18 +171,93 @@ def cmd_product(args):
              "info_url": info_url, "info_name": info_name, "files": files})
 
 
+def probe_url(url, timeout=TIMEOUT):
+    """探测 URL 是否可下载：Range 只读极少字节，不做整包下载。
+
+    404 等错误由 urllib 抛出 HTTPError，统一包成 WsError 供调用方
+    对候选目录逐个尝试。服务器不支持 Range 时返回 200 全文，也视为可用。
+    """
+    req = urllib.request.Request(url, headers=dict(HEADERS, Range="bytes=0-0"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read(16)
+            return resp.getcode()
+    except (urllib.error.URLError, OSError) as exc:
+        raise ws.WsError("IMAGE_PROBE_FAILED", "探测不可用 %s: %s" % (url, exc))
+
+
+def dir_stamp(name):
+    """构建目录名中的 id<时间戳>（如 id202610132334011），用于新旧排序。"""
+    m = re.search(r"id(\d{9,})", name)
+    return int(m.group(1)) if m else 0
+
+
+def list_dir_names(base):
+    """列举目录页，返回其中的子目录名列表（仅带尾斜杠的目录链接）。"""
+    html = http_get(base).decode("utf-8", "replace")
+    names = []
+    for href in re.findall(r'href="([^"?][^"]*)"', html):
+        if href.startswith(("http://", "https://", "/", "..", "#")):
+            continue
+        if not href.endswith("/"):
+            continue
+        name = href[:-1].split("/")[-1]
+        if name in ("", ".") or name in names:
+            continue
+        names.append(name)
+    return names
+
+
+def find_image_url(base, build_project, project, image_name=IMAGE_NAME):
+    """在 <base>/<build_project>/<project>/ 下查找最新含镜像包的构建目录。
+
+    构建目录按名字里的 id<时间戳> 从新到旧逐个探测
+    <目录>/<image_name>，命中即返回 (镜像直链, 查找信息 dict)。
+    """
+    trunk = "%s/%s/%s" % (base.rstrip("/"), build_project, project)
+    try:
+        dirs = list_dir_names(trunk)
+    except ws.WsError as exc:
+        raise ws.WsError("IMAGE_LIST_FAILED",
+                         "无法列举构建目录 %s: %s" % (trunk, exc.message))
+    ordered = sorted(dirs, key=lambda n: (dir_stamp(n), n), reverse=True)
+    if not ordered:
+        raise ws.WsError("IMAGE_NOT_FOUND", "%s 下未列举到任何构建目录" % trunk)
+    attempts = []
+    for name in ordered:
+        url = "%s/%s/%s" % (trunk, name, image_name)
+        try:
+            probe_url(url)
+            return url, {"trunk": trunk, "chosen": name, "candidates": ordered}
+        except ws.WsError as exc:
+            attempts.append(exc.message)
+            ws.log("候选镜像不可用: %s" % url, "WARN")
+    raise ws.WsError("IMAGE_NOT_FOUND",
+                     "在 %s 下 %d 个构建目录均无 %s：\n  %s"
+                     % (trunk, len(ordered), image_name, "\n  ".join(attempts)))
+
+
 def cmd_image(args):
-    """下载 image.tar.bz2。"""
+    """下载镜像包：--url 直链，或按 --base/--build-project/--project 自动查找。"""
     out_dir = os.path.abspath(args.out)
     ws.ensure_dir(out_dir)
-    name = args.name or pick_image_name(args.url)
+    found = None
+    url = args.url
+    if not url:
+        if not (args.base and args.build_project and args.project):
+            ws.emit_error("ARG_MISSING",
+                          "需要 --url，或同时指定 --base / --build-project / --project")
+        url, found = find_image_url(args.base, args.build_project, args.project)
+        ws.log("已定位镜像: %s" % url, "INFO")
+    name = args.name or pick_image_name(url)
     target = os.path.join(out_dir, name)
     try:
-        size = download(args.url, target)
+        size = download(url, target)
     except ws.WsError as exc:
         ws.emit_error("IMAGE_DOWNLOAD_FAILED", exc.message)
     ws.emit({"ok": True, "action": "image", "out": out_dir,
-             "file": {"url": args.url, "path": target, "name": name, "size": size}})
+             "file": {"url": url, "path": target, "name": name, "size": size},
+             "found": found})
 
 
 def build_parser():
@@ -187,8 +270,11 @@ def build_parser():
     p.add_argument("--info-dir", default=None, help="显式指定 *_info 目录（默认自动探测）")
     p.set_defaults(func=cmd_product)
 
-    p = sub.add_parser("image", help="下载 image.tar.bz2")
-    p.add_argument("--url", required=True, help="镜像包链接")
+    p = sub.add_parser("image", help="下载镜像包（直链或按构建工程自动查找）")
+    p.add_argument("--url", default=None, help="镜像包直链（与 --base 组参数二选一）")
+    p.add_argument("--base", default=None, help="编译产物根目录（截至 .../output）")
+    p.add_argument("--build-project", default=None, help="构建工程名（如 git-build-sw）")
+    p.add_argument("--project", default=None, help="项目名（如 12_5_SPT462）")
     p.add_argument("--out", required=True, help="下载落地目录")
     p.add_argument("--name", default=None, help="保存文件名（默认从 URL 推断）")
     p.set_defaults(func=cmd_image)

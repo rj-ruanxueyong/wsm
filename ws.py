@@ -5,15 +5,17 @@
 命令：
     ws.py init   --url <prj_compile_output_url> [--repos-root <path>] [--user <user_name>]
     ws.py add    --repo <仓库名> [--repo <仓库名> ...] [--no-fast]
-    ws.py add    --img  [--url <url>] [--path <dir>]
-    ws.py add    --header --url <url>
+    ws.py add    --header [--url <url>] [--path <dir>] [--force]
     ws.py remove --repo <仓库名> [--yes]
     ws.py remove --all [--yes]
     ws.py status | list [--repo|--component] [--all] | doctor [--net]
 
 仓库根（REPOS_ROOT）与 git 用户名（USER_NAME，别名 REPOS_USER_NAME）已改为全局
 配置 ~/.config/wsm/ws.config 管理，本地 .ws_env/ws.config 里的同名旧键仅作兜底；
-其余配置（IMAGES_URL 等工作区属性）仍保存在工作区本地。
+其余配置（BUILD_PROJECT / PROJECT 等工作区属性）仍保存在工作区本地。
+
+add --header：通过 init 时保存的编译产物根目录 + BUILD_PROJECT（默认
+git-build-sw）查找对应镜像包并下载，解压后只保留 header 目录。
 
 下载统一走 download.py，解析/解压统一走 extract.py。
 """
@@ -34,6 +36,7 @@ GERRIT_PORT = 29418
 INTERNAL_GIT = "git@git.ruijie.net"
 ISSUES_NAME = "issues.json"
 IMAGES_NAME = "images.json"
+BUILD_PROJECT_DEFAULT = "git-build-sw"  # add --header 缺省构建工程
 
 
 # ---------------------------------------------------------------- 问题记录
@@ -421,13 +424,12 @@ def cmd_init(args):
         ws.emit_error(exc.code, exc.message, issues=load_issues(root))
 
     product = ex.get("product", {})
-    # REPOS_ROOT / 用户名已改为全局配置（~/.config/wsm/ws.config），不再写入本地
+    # 只写工作区级键；REPOS_ROOT / 用户名走全局配置（~/.config/wsm/ws.config）
+    # BUILD_PROJECT 供 add --header 定位镜像包（默认 git-build-sw，可手工改）；
+    # 编译产物根目录从 repos.json 的 product.output 读取，不再存进配置
     ws.save_config({
-        "COMPILE_OUTPUT_URL": args.url,
-        "BUILD_PROJECT": product.get("build_project") or "",
+        "BUILD_PROJECT": BUILD_PROJECT_DEFAULT,
         "PROJECT": product.get("project") or "",
-        "IMAGES_URL": product.get("images") or "",
-        "CREATED_AT": ws.now_str(),
     }, root)
 
     if not os.path.isfile(os.path.join(env, ws.WORKTREES_JSON_NAME)):
@@ -453,12 +455,12 @@ def use_fast(args):
 
 def cmd_add(args):
     root = ws.find_ws_root()
-    if args.header or args.img:
+    if args.header:
         if getattr(args, "fast", False) or getattr(args, "no_fast", False):
             ws.emit_error("ARG_CONFLICT", "--fast / --no-fast 只能与 --repo 一起使用")
         return add_image(root, args)
     if not args.repo:
-        ws.emit_error("ARG_MISSING", "请指定 --repo <仓库名>，或使用 --img / --header")
+        ws.emit_error("ARG_MISSING", "请指定 --repo <仓库名>，或使用 --header 获取头文件")
     return add_repos(root, args)
 
 
@@ -583,14 +585,42 @@ def link_images(root, dest_dir, force=False):
     return link
 
 
+def output_base_from_product(product, root):
+    """从 init 保存的编译产物链接推导镜像查找根目录（截至 /output/）。
+
+    优先用 repos.json 里的 product.output；旧工作区兜底读取本地配置
+    COMPILE_OUTPUT_URL。返回形如 http://<host>/ngcf/output 的根目录。
+    """
+    for raw in ((product or {}).get("output"),
+                ws.config_value("COMPILE_OUTPUT_URL", root)):
+        if raw and "/output/" in raw:
+            return raw[:raw.rindex("/output/") + len("/output/")].rstrip("/")
+    return None
+
+
 def add_image(root, args):
-    """处理 add --img / add --header。"""
+    """处理 add --header：按 BUILD_PROJECT 查找镜像包，只保留 header 目录。
+
+    镜像在 <编译产物根>/<BUILD_PROJECT>/<PROJECT>/ 下：构建目录名含
+    id<时间戳>，按时间从新到旧取首个含 image.tar.bz2 的目录。
+    """
     repos = ws.load_repos(root)
-    images_url = args.url or (repos.get("product", {}) or {}).get("images") \
-        or ws.config_value("IMAGES_URL", root)
+    product = repos.get("product") or {}
+    build_project = ws.config_value("BUILD_PROJECT", root) or BUILD_PROJECT_DEFAULT
+    project = product.get("project") or ws.config_value("PROJECT", root)
+
+    images_url = args.url
+    base = None
     if not images_url:
-        ws.emit_error("IMAGES_URL_MISSING",
-                      "未指定 --url，且 repos.json/ws.config 中无 images 地址，请先执行 init")
+        base = output_base_from_product(product, root)
+        if not base:
+            ws.emit_error("IMAGE_BASE_MISSING",
+                          "无法确定编译产物根目录（缺 init 时保存的 output 链接），"
+                          "请重新 init，或用 --url 直接指定镜像包直链")
+        if not project:
+            ws.emit_error("PROJECT_MISSING",
+                          "缺少项目名（PROJECT），请重新 init，"
+                          "或用 --url 直接指定镜像包直链")
 
     tmp_dir = ws.ensure_dir(os.path.join(root, ws.PUB_DIR_NAME))
     local_images = os.path.join(root, ws.IMAGES_DIR_NAME)
@@ -599,11 +629,15 @@ def add_image(root, args):
     if args.path:
         src = os.path.abspath(os.path.expanduser(args.path))
         if os.path.isdir(os.path.join(src, ws.IMAGES_DIR_NAME)):
-            link = link_images(root, os.path.join(src, ws.IMAGES_DIR_NAME), args.force)
+            link = link_images(root, os.path.join(src, ws.IMAGES_DIR_NAME),
+                               args.force)
             record_images(root, images_url, None, "symlink",
-                          os.path.join(src, ws.IMAGES_DIR_NAME), "使用已有 images 目录")
+                          os.path.join(src, ws.IMAGES_DIR_NAME),
+                          "使用已有 images 目录")
             render_final(root_int=root)
-            ws.emit({"ok": True, "action": "img", "mode": "symlink", "link": link,
+            ws.emit({"ok": True, "action": "header", "mode": "symlink",
+                     "link": link,
+                     "build_project": build_project, "project": project,
                      "source": os.path.join(src, ws.IMAGES_DIR_NAME)})
             return
         dest_dir = os.path.join(src, ws.IMAGES_DIR_NAME)
@@ -611,29 +645,35 @@ def add_image(root, args):
         dest_dir = local_images
 
     try:
-        dl = ws.call_script("download.py",
-                            ["image", "--url", images_url, "--out", tmp_dir], root)
+        dl_args = ["image", "--out", tmp_dir]
+        if images_url:
+            dl_args += ["--url", images_url]
+        else:
+            dl_args += ["--base", base, "--build-project", build_project,
+                        "--project", project]
+        dl = ws.call_script("download.py", dl_args, root)
         tar_path = dl["file"]["path"]
-        ex_args = ["image", "--file", tar_path, "--dir", dest_dir]
-        if args.header:
-            ex_args.append("--header")
-        ws.call_script("extract.py", ex_args, root)
+        images_url = dl["file"].get("url") or images_url
+        ws.call_script("extract.py",
+                       ["image", "--file", tar_path, "--dir", dest_dir,
+                        "--header"], root)
     except ws.WsError as exc:
-        add_issue("add-image", images_url, exc.code, exc.message, root)
+        add_issue("add-header", images_url or build_project,
+                  exc.code, exc.message, root)
         render_final(root_int=root)
         ws.emit_error(exc.code, exc.message, issues=load_issues(root))
 
-    mode = "header" if args.header else "extract"
-    note = "只保留 header 目录" if args.header else None
     if args.path:
         link = link_images(root, dest_dir, args.force)
     else:
         link = local_images
-    record_images(root, images_url, tar_path, mode, dest_dir, note)
+    record_images(root, images_url, tar_path, "header", dest_dir,
+                  "只保留 header 目录")
     render_final(root_int=root)
-    ws.emit({"ok": True, "action": "img", "mode": mode, "link": link, "dest": dest_dir,
-             "header": os.path.join(dest_dir, "header") if args.header else None,
-             "file": tar_path})
+    ws.emit({"ok": True, "action": "header", "build_project": build_project,
+             "project": project, "link": link, "dest": dest_dir,
+             "header": os.path.join(dest_dir, "header"), "file": tar_path,
+             "url": images_url})
 
 
 # ---------------------------------------------------------------- 清理
@@ -1023,9 +1063,11 @@ def build_parser():
                             help="快速拉取（默认已开启，此为显式写法）：git init + fetch --no-tags origin <分支号>")
     fast_group.add_argument("--no-fast", action="store_true",
                             help="关闭快速拉取，改用整体 git clone（仓库很大时较慢，仅在不便按分支号拉取时使用）")
-    p.add_argument("--img", action="store_true", help="获取 images")
-    p.add_argument("--header", action="store_true", help="获取 images 且只保留 header 目录")
-    p.add_argument("--url", default=None, help="images 包链接（缺省从 repos.json 取）")
+    p.add_argument("--header", action="store_true",
+                   help="按 BUILD_PROJECT（默认 git-build-sw）查找并下载镜像包，"
+                        "解压后只保留 header 目录")
+    p.add_argument("--url", default=None,
+                   help="镜像包直链（显式指定时跳过 BUILD_PROJECT 自动查找）")
     p.add_argument("--path", default=None, help="images 存放路径")
     p.add_argument("--force", action="store_true", help="覆盖已存在的 images 链接/目录")
     p.set_defaults(func=cmd_add)

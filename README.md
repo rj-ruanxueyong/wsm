@@ -48,8 +48,9 @@ EOF
 - **全局优先**：如果旧工作区本地 `.ws_env/ws.config` 里还残留同名
   `REPOS_ROOT` / `USER_NAME`，会被全局值覆盖，本地旧键仅作兜底（
   无全局文件时仍生效）。
-- 其余键（`PROJECT`、`BUILD_PROJECT`、`COMPILE_OUTPUT_URL`、`IMAGES_URL`
-  等工作区属性）只保存在各工作区本地，与全局无关。
+- 其余键（`PROJECT`、`BUILD_PROJECT` 等工作区属性）只保存在各工作区本地。
+- `add --header` 用 `BUILD_PROJECT`（默认 `git-build-sw`，init 写入，可手工
+  改成实际提供镜像的构建工程）在编译产物根目录下定位镜像包。
 - 修改仓库根 / 用户名一律改全局文件；`init` 不会再把它们写入本地。
 
 ---
@@ -63,8 +64,8 @@ python3 ws.py init --url <项目 compile_output 链接>
 # 2) 批量建立 worktree（默认快速拉取：单分支 fetch，比整体 clone 快得多）
 python3 ws.py add --repo switch_route --repo switch_bridge
 
-# 3) 获取 images 镜像包（可选；--header 只保留 header 目录）
-python3 ws.py add --img
+# 3) 获取头文件（可选）：按 BUILD_PROJECT 查找镜像包，只保留 header 目录
+python3 ws.py add --header
 
 # 4) 查看状态 / 索引 / 自检
 python3 ws.py status
@@ -83,7 +84,8 @@ ws.py init --url <prj_compile_output_url> [--repos-root <path>] [--user <user>]
 ```
 
 - 下载并解析 product_info / rootfs.config，生成 `.ws_env/repos.json`
-  （组件→仓库映射），写入本地 `ws.config`（不含 REPOS_ROOT / 用户名）。
+  （组件→仓库映射），写入本地 `ws.config`（`BUILD_PROJECT` / `PROJECT`；
+  不含 REPOS_ROOT / 用户名）。
 - `--repos-root` / `--user`：临时覆盖，**缺省读全局配置**；不传用户名时
   全局也没有则尝试从 `git config user.email` 推导，仍失败报错
   （提示配置全局 `USER_NAME`）。
@@ -92,8 +94,7 @@ ws.py init --url <prj_compile_output_url> [--repos-root <path>] [--user <user>]
 
 ```bash
 ws.py add --repo <仓库名> [--repo <仓库名> ...] [--no-fast]
-ws.py add --img [--url <url>] [--path <dir>] [--force]
-ws.py add --header --url <url> [--force]
+ws.py add --header [--url <url>] [--path <dir>] [--force]
 ```
 
 - `--repo` 可重复，为每个仓库建立 worktree：
@@ -103,8 +104,11 @@ ws.py add --header --url <url> [--force]
 - 主克隆默认 **快速拉取**：`git init` + `fetch --no-tags origin
   refs/heads/<分支号>`，只拉目标分支、保留完整历史，比整体 clone 快
   一个量级；`--no-fast` 才整体 clone。
-- `--img` / `--header` 与 `--repo` 二选一场景使用；`--force` 覆盖已存在
-  的 images 链接/目录；`--url` 缺省从 `repos.json` 取优先配置。
+- `--header` 与 `--repo` 二选一场景使用：从 init 保存的编译产物根目录
+  （截至 `.../output`）拼 `<BUILD_PROJECT>/<PROJECT>/`，按构建目录名中的
+  `id<时间戳>` 从新到旧探测首个含 `image.tar.bz2` 的目录，下载并解压后
+  只保留 `header` 目录；`--url` 可显式指定镜像包直链跳过自动查找；
+  `--force` 覆盖已存在的 images 链接/目录。
 
 ### 4.3 `remove` — 移除 worktree
 
