@@ -26,9 +26,9 @@ RGOS 工作空间管理 CLI：从编译产物（product_info / rootfs.config）�
    `ws.emit_error()` 输出失败 JSON 并 exit 1。不要裸抛异常或 print 报错。
    - 约定：WARN 不算失败不阻塞；ERROR 算失败。错误码英文大写蛇形
      （`FETCH_FAILED`、`TARGET_EXISTS`…）。
-3. **日志策略**：stderr 回显一切；只有 WARN/ERROR 落 `ws_tmp/log/ws.log`；
-   `ws_tmp/log/issues.json` 记问题（`add_issue()` 同步写两处）；
-   `ws_tmp/log/final.md` 覆盖写汇总。INFO 永不落盘。
+3. **日志策略**：stderr 回显一切；只有 WARN/ERROR 落 `.ws_tmp/log/ws.log`；
+   `.ws_tmp/log/issues.json` 记问题（`add_issue()` 同步写两处）；
+   `.ws_tmp/log/final.md` 覆盖写汇总。INFO 永不落盘。
 4. **状态文件一律原子写**：用 `ws.save_json()` / `ws.save_config()`（.tmp +
    `os.replace`），不要直接 open("w")。
 5. **两个根判定不可混用**：`ws.is_ws_root()`（严格，须有 `.ws_env/ws.config`）用于
@@ -51,14 +51,14 @@ RGOS 工作空间管理 CLI：从编译产物（product_info / rootfs.config）�
   承载跨工作区共享的 `REPOS_ROOT` 与用户名（`USER_NAME`，别名 `REPOS_USER_NAME`）。
   这两个键**全局优先**，本地 `.ws_env/ws.config` 的同名旧键仅作兜底；
   init 不再把它们写进本地 ws.config，修改要改全局文件。
-- `ws_tmp/`：下载中间产物（product_info / rootfs.config / image tar）；
-  下方 `ws_tmp/log/`：`ws.log`、`issues.json`、`final.md`。
+- `.ws_tmp/`：下载中间产物（product_info / rootfs.config / image tar）；
+  下方 `.ws_tmp/log/`：`ws.log`、`issues.json`、`final.md`。
   所有 JSON `ensure_ascii=False`。目录可整体删除，下次命令按需重建。
 - `find_ws_root()` 上溯找不到根时返回**起始 cwd**，不允许写状态到 `/`。
 
 ## 验证方式（仓库内无测试）
 
-- 改动后先跑非破坏性命令核对 stdout JSON 与 `ws_tmp/log/final.md`：
+- 改动后先跑非破坏性命令核对 stdout JSON 与 `.ws_tmp/log/final.md`：
   `python3 ws.py doctor`、`python3 ws.py status`、`python3 ws.py list`。
 - init/add 等联网命令可用离线夹具验证：临时目录造 bare 远端 + 手写最小
   `.ws_env/{ws.config,repos.json}`（repos.json 走真实格式、REPOS_ROOT 指向假目录）。

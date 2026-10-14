@@ -135,7 +135,7 @@ ws.py status
 ```
 
 - stdout 输出结果 JSON（worktree 状态、config 解析值、images、问题记录），
-  同时覆盖刷新 `ws_tmp/log/final.md` 汇总（失败场景也会产出，便于定位）。
+  同时覆盖刷新 `.ws_tmp/log/final.md` 汇总（失败场景也会产出，便于定位）。
 
 ### 4.6 `doctor` — 自检
 
@@ -158,7 +158,7 @@ ws.py doctor [--net]
 │   ├── repos.json       # 组件→仓库映射（init 生成）
 │   ├── worktrees.json   # worktree 登记（add/remove 维护）
 │   └── images.json      # images 获取记录
-└── ws_tmp/              # 临时产物目录（可整体删除，下次命令按需重建）
+└── .ws_tmp/             # 临时产物目录（可整体删除，下次命令按需重建）
     ├── *.tar 等          # 下载的编译产物 / images 包（中间产物）
     └── log/
         ├── ws.log        # 只记 WARN/ERROR（INFO 仅回显 stderr）

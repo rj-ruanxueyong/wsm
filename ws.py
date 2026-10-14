@@ -51,7 +51,7 @@ def reset_issues(root=None):
 
 
 def add_issue(step, target, code, message, root=None, level="ERROR"):
-    """记录一条问题：写 ws_tmp/log/ws.log（WARN/ERROR）+ ws_tmp/log/issues.json
+    """记录一条问题：写 .ws_tmp/log/ws.log（WARN/ERROR）+ .ws_tmp/log/issues.json
 （供 final.md 汇总）。"""
     ws.log("[%s] %s | %s | %s" % (step, target, code, message), level, root)
     data = load_issues(root)
@@ -876,13 +876,13 @@ def cmd_doctor(args):
     check("repos.json 含仓库索引", bool(repos.get("repos")),
           "repos=%d" % len(repos.get("repos", {})))
 
-    # 目录版本迁移提示：旧版中间产物在 .ws_pub/、日志在根下 log/，
-    # 新版统一并入 ws_tmp/；残留旧目录时提示清理，避免新旧两份混淆
+    # 目录版本迁移提示：旧版中间产物在 .ws_pub/、日志在根下 log/、
+    # 曾用临时目录 ws_tmp/；残留旧目录时提示清理，避免新旧两份混淆
     if ws.has_env_dir(root):
-        legacy_dirs = [d for d in (".ws_pub", "log")
+        legacy_dirs = [d for d in (".ws_pub", "log", "ws_tmp")
                        if os.path.isdir(os.path.join(root, d))]
-        check("旧目录(.ws_pub/log)已清理", not legacy_dirs,
-              ("残留 %s，建议手动迁移或删除（新版功能已并入 ws_tmp/）"
+        check("旧目录(.ws_pub/ws_tmp/log)已清理", not legacy_dirs,
+              ("残留 %s，建议手动迁移或删除（新版功能已并入 .ws_tmp/）"
                % ", ".join(legacy_dirs)) if legacy_dirs else "无旧目录残留")
 
     if args.net:
@@ -901,7 +901,7 @@ def cmd_doctor(args):
 # ---------------------------------------------------------------- final.md
 
 def render_final(root_int=None):
-    """生成/覆盖 ws_tmp/log/final.md 结果汇总。"""
+    """生成/覆盖 .ws_tmp/log/final.md 结果汇总。"""
     root = root_int or ws.find_ws_root()
     # 用宽松判定：init 失败时 ws.config 尚未写入，也需要生成汇总便于定位
     if not ws.has_env_dir(root):
@@ -1042,7 +1042,7 @@ def build_parser():
     p.add_argument("--all", action="store_true", help="列出全部仓库索引")
     p.set_defaults(func=cmd_list)
 
-    p = sub.add_parser("status", help="查看当前工作空间状态并刷新 ws_tmp/log/final.md")
+    p = sub.add_parser("status", help="查看当前工作空间状态并刷新 .ws_tmp/log/final.md")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("doctor", help="自检环境与配置")
