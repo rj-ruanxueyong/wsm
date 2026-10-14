@@ -51,7 +51,8 @@ def reset_issues(root=None):
 
 
 def add_issue(step, target, code, message, root=None, level="ERROR"):
-    """记录一条问题：写 log/ws.log（WARN/ERROR）+ log/issues.json（供 final.md 汇总）。"""
+    """记录一条问题：写 ws_tmp/log/ws.log（WARN/ERROR）+ ws_tmp/log/issues.json
+（供 final.md 汇总）。"""
     ws.log("[%s] %s | %s | %s" % (step, target, code, message), level, root)
     data = load_issues(root)
     data.append({"time": ws.now_str(), "step": step, "target": target,
@@ -406,12 +407,14 @@ def cmd_init(args):
                       "或在全局配置 %s 设置 USER_NAME" % gconf)
 
     reset_issues(root)
-    pub_dir = ws.ensure_dir(os.path.join(root, ws.PUB_DIR_NAME))
+    tmp_dir = ws.ensure_dir(os.path.join(root, ws.PUB_DIR_NAME))
     repos_json = os.path.join(env, ws.REPOS_JSON_NAME)
 
     try:
-        dl = ws.call_script("download.py", ["product", "--url", args.url, "--out", pub_dir], root)
-        ex = ws.call_script("extract.py", ["product", "--dir", pub_dir, "--out", repos_json], root)
+        dl = ws.call_script("download.py",
+                            ["product", "--url", args.url, "--out", tmp_dir], root)
+        ex = ws.call_script("extract.py",
+                            ["product", "--dir", tmp_dir, "--out", repos_json], root)
     except ws.WsError as exc:
         add_issue("init", args.url, exc.code, exc.message, root)
         render_final(root_int=root)
@@ -589,7 +592,7 @@ def add_image(root, args):
         ws.emit_error("IMAGES_URL_MISSING",
                       "未指定 --url，且 repos.json/ws.config 中无 images 地址，请先执行 init")
 
-    pub_dir = ws.ensure_dir(os.path.join(root, ws.PUB_DIR_NAME))
+    tmp_dir = ws.ensure_dir(os.path.join(root, ws.PUB_DIR_NAME))
     local_images = os.path.join(root, ws.IMAGES_DIR_NAME)
 
     # 已指定本地路径且其中已有 images 目录：直接软链，不重复下载
@@ -608,7 +611,8 @@ def add_image(root, args):
         dest_dir = local_images
 
     try:
-        dl = ws.call_script("download.py", ["image", "--url", images_url, "--out", pub_dir], root)
+        dl = ws.call_script("download.py",
+                            ["image", "--url", images_url, "--out", tmp_dir], root)
         tar_path = dl["file"]["path"]
         ex_args = ["image", "--file", tar_path, "--dir", dest_dir]
         if args.header:
@@ -869,7 +873,17 @@ def cmd_doctor(args):
     check("REPOS_ROOT 存在", bool(repos_root) and os.path.isdir(repos_root), repos_root or "")
 
     repos = ws.load_repos(root)
-    check("repos.json 含仓库索引", bool(repos.get("repos")), "repos=%d" % len(repos.get("repos", {})))
+    check("repos.json 含仓库索引", bool(repos.get("repos")),
+          "repos=%d" % len(repos.get("repos", {})))
+
+    # 目录版本迁移提示：旧版中间产物在 .ws_pub/、日志在根下 log/，
+    # 新版统一并入 ws_tmp/；残留旧目录时提示清理，避免新旧两份混淆
+    if ws.has_env_dir(root):
+        legacy_dirs = [d for d in (".ws_pub", "log")
+                       if os.path.isdir(os.path.join(root, d))]
+        check("旧目录(.ws_pub/log)已清理", not legacy_dirs,
+              ("残留 %s，建议手动迁移或删除（新版功能已并入 ws_tmp/）"
+               % ", ".join(legacy_dirs)) if legacy_dirs else "无旧目录残留")
 
     if args.net:
         # gerrit 的 SSH 命令集里没有 shell 的 true，必须用 gerrit 自己的子命令
@@ -887,7 +901,7 @@ def cmd_doctor(args):
 # ---------------------------------------------------------------- final.md
 
 def render_final(root_int=None):
-    """生成/覆盖 log/final.md 结果汇总。"""
+    """生成/覆盖 ws_tmp/log/final.md 结果汇总。"""
     root = root_int or ws.find_ws_root()
     # 用宽松判定：init 失败时 ws.config 尚未写入，也需要生成汇总便于定位
     if not ws.has_env_dir(root):
@@ -1028,7 +1042,7 @@ def build_parser():
     p.add_argument("--all", action="store_true", help="列出全部仓库索引")
     p.set_defaults(func=cmd_list)
 
-    p = sub.add_parser("status", help="查看当前工作空间状态并刷新 log/final.md")
+    p = sub.add_parser("status", help="查看当前工作空间状态并刷新 ws_tmp/log/final.md")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("doctor", help="自检环境与配置")

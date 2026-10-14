@@ -24,10 +24,12 @@ USER_NAME_ALT_KEY = "REPOS_USER_NAME"  # 用户名在全局配置中的别名写
 GLOBAL_FIRST_KEYS = ("REPOS_ROOT", "USER_NAME", USER_NAME_ALT_KEY)
 REPOS_JSON_NAME = "repos.json"
 WORKTREES_JSON_NAME = "worktrees.json"
-LOG_DIR_NAME = "log"              # 日志目录（工作区根）
+TMP_DIR_NAME = "ws_tmp"          # 临时产物目录（工作区根，中间产物 + 日志）
+LOG_DIR_NAME = os.path.join(TMP_DIR_NAME, "log")
+                                  # 日志目录：ws_tmp/log
 LOG_NAME = "ws.log"               # 异常/错误日志文件名
 FINAL_NAME = "final.md"
-PUB_DIR_NAME = ".ws_pub"          # 中间产物（下载的 product_info / rootfs.config / tar）
+PUB_DIR_NAME = TMP_DIR_NAME       # 中间产物（下载的 product_info / rootfs.config / tar）
 IMAGES_DIR_NAME = "images"        # 镜像目录（可为软链接）
 
 # 需要写入日志文件的级别；INFO 只回显到 stderr 不落盘
@@ -45,7 +47,7 @@ def emit(data):
 
 
 def emit_error(code, message, **extra):
-    """失败结果 JSON + 非 0 退出码，同时把该错误落盘到 log/。"""
+    """失败结果 JSON + 非 0 退出码，同时把该错误落盘到 ws_tmp/log/。"""
     log("[%s] %s" % (code, message), "ERROR")
     data = {"ok": False, "code": code, "message": message}
     data.update(extra)
@@ -407,7 +409,7 @@ LOG_LINE_FMT = "%s [%-5s] %s"
 
 
 def log_dir(root=None):
-    """日志目录：<工作区根>/log；未初始化工作空间时退到当前目录。"""
+    """日志目录：<工作区根>/ws_tmp/log；未初始化时退到当前目录。"""
     return os.path.join(root or find_ws_root(), LOG_DIR_NAME)
 
 
@@ -424,7 +426,7 @@ def log(msg, level="INFO", root=None):
     """记录一条日志。
 
     - 始终回显到 stderr
-    - WARN / ERROR 额外追加到 <工作区根>/log/ws.log
+    - WARN / ERROR 额外追加到 <工作区根>/ws_tmp/log/ws.log
     - 写入失败不影响主流程
     """
     if level in LOG_LEVELS:
